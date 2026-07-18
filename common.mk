@@ -3,6 +3,8 @@
 # =========================================================
 
 # Allow the local Makefile to override these variables, but set defaults
+VARIANTS ?= 0
+VARIANT ?= $(firstword $(VARIANTS))
 INCDIRS ?= +incdir+rtl
 SIM     ?= vsim
 FILELIST ?= rtl.f
@@ -33,20 +35,25 @@ run_all: build.f
 	done
 
 run_%: build.f
-	@echo "=== Running $* with $(SIM) ==="
+	@for v in $(VARIANTS); do \
+		$(MAKE) run_single_$* SIM=$(SIM) VARIANT=$$v; \
+	done
+
+run_single_%: build.f
+	@echo "=== Running $* with $(SIM) (Variant $(VARIANT)) ==="
 ifeq ($(SIM), verilator)
 	verilator --version
-	verilator $(VERILATOR_FLAGS) $(INCDIRS) --top-module $* -f build.f tb/$*.sv
-	bash -c "set -o pipefail; ./obj_dir/V$* 2>&1 | tee $*.log"
+	verilator $(VERILATOR_FLAGS) $(INCDIRS) -GLASCON_VARIANT=$(VARIANT) --top-module $* -f build.f tb/$*.sv
+	bash -c "set -o pipefail; ./obj_dir/V$* 2>&1 | tee $*_variant$(VARIANT).log"
 else
 	vlib work
 	vlog -work work -sv $(INCDIRS) -f build.f tb/$*.sv
 
-	@echo 'vcd file "$*.vcd"' > run_$*.macro
+	@echo 'vcd file $*_variant$(VARIANT).vcd' > run_$*.macro
 	@echo 'vcd add -r /$*/*' >> run_$*.macro
 	@echo 'run -all' >> run_$*.macro
 	@echo 'quit' >> run_$*.macro
-	vsim -c -do run_$*.macro work.$* -l $*.log
+	vsim -c -gLASCON_VARIANT=$(VARIANT) -do run_$*.macro work.$* -l $*_variant$(VARIANT).log
 	@rm -f run_$*.macro
 endif
 
@@ -54,13 +61,18 @@ endif
 # SYNTHESIS TARGETS
 # =====================
 TOP_MODULE ?= $(basename $(notdir $(shell grep -v '^\s*\#' $(FILELIST) | grep -v '^\s*$$' | grep -v '^-' | tail -1)))
+SYNTH_MODULES ?= $(TOP_MODULE)
 SYNTH_OUTDIR ?= ./synth/metrics/
 SYNTH_LOGDIR ?= ./synth/build/logs/
 
 .PHONY: synth
 
 # Run all synthesis targets
-synth: synth_fpga synth_asic
+synth:
+	@for mod in $(SYNTH_MODULES); do \
+		$(MAKE) synth_single_fpga TOP_MODULE=$$mod; \
+		$(MAKE) synth_single_asic TOP_MODULE=$$mod; \
+	done
 
 .PHONY: get_sky130
 get_sky130:
@@ -68,10 +80,20 @@ get_sky130:
 
 # Individual synthesis targets
 synth_fpga: build.f
+	@for mod in $(SYNTH_MODULES); do \
+		$(MAKE) synth_single_fpga TOP_MODULE=$$mod; \
+	done
+
+synth_asic: build.f get_sky130
+	@for mod in $(SYNTH_MODULES); do \
+		$(MAKE) synth_single_asic TOP_MODULE=$$mod; \
+	done
+
+synth_single_fpga: build.f
 	@echo "=== Running Yosys Synthesis (fpga) for $(TOP_MODULE) ==="
 	python3 $(BUILD_TOOLS_DIR)/scripts/synth_metrics.py --top $(TOP_MODULE) --run fpga --outdir $(SYNTH_OUTDIR) --logdir $(SYNTH_LOGDIR)
 
-synth_asic: build.f get_sky130
+synth_single_asic: build.f get_sky130
 	@echo "=== Running Yosys Synthesis (asic) for $(TOP_MODULE) ==="
 	python3 $(BUILD_TOOLS_DIR)/scripts/synth_metrics.py --top $(TOP_MODULE) --run asic --outdir $(SYNTH_OUTDIR) --logdir $(SYNTH_LOGDIR)
 
